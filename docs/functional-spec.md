@@ -389,8 +389,8 @@ Exit codes: `0` success; `1` validation or configuration failure (unreachable en
 
 | Document | Role |
 |---|---|
-| [../README.md](../README.md) | Operator quick start |
-| Workbook **Read Me** sheet | In-file editing rules |
-| [../experiments/README.md](../experiments/README.md) | Archived dual-workbook experiment |
-| Tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0) | Prior Nimble-only behavior |
+| [../README.md](../README.md) | Only project README — Nimble and Jev operator guide |
+| Workbook **Read Me** sheet | In-Excel editing rules |
+| [../experiments/README.md](../experiments/README.md) | Folder archive note (not day-to-day) |
+| Tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0) | Older Nimble-only snapshot |
 
