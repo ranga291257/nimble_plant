@@ -1,19 +1,33 @@
 # nimble_plant
 
-This tool classifies plant-operations text (pumps, exchangers, columns, and so on) into structured answers.
+Classify plant **statements** (pumps, exchangers, columns, …) into structured answers.
 
-**It supports two engines in the same workbook:**
+**Engines (same workbook):**
 
-| Engine | What it is | How you run it |
+| Engine | Where | Command |
 |---|---|---|
-| **Nimble** | Local decision model through Ollama on your machine | `--engine nimble` |
-| **Jev** | Hosted decision model on TypeSafe’s cloud | `--engine jev` (needs an API key) |
+| **Nimble** | Local Ollama | `--engine nimble` |
+| **Jev** | TypeSafe cloud | `--engine jev` (needs `TYPESAFE_API_KEY`) |
 
-You edit questions and records once. You run Nimble, or Jev, or both. Each engine writes its **own** result sheets. If both have been run, the workbook also gets a side-by-side **compare** sheet.
+Edit questions and records in Excel. Run from the terminal. Each engine writes its own result sheets; when both have run, `output_compare` appears.
 
-You start runs from the terminal with Python (not from a button inside Excel).
+> Branch **`v1.0-dev`**. Older Nimble-only snapshot: tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0).
 
-> This branch is **`v1.0-dev`** (Nimble + Jev). The older Nimble-only snapshot is tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0).
+---
+
+## How questions work (keep it simple)
+
+1. **`Records.text`** — the statement to classify.
+2. **Common questions** — leave `Questions.equipment_type` blank (asked for every asset): failure mode, containment, load, urgency, impact, potential impact.
+3. **Unit-op questions** — set `equipment_type` (only that class): e.g. cross-contamination (heat exchanger), off-spec / stability (column).
+4. **Three answer types only:**
+   - **choice** — pick one label from Labels  
+   - **noul** — yes/no  
+   - **score** — ordered scale from Labels (not a free 1–10; levels are the label rows, usually 3)
+
+Labels may set `equipment_type` so **choices differ by class** under the same common question (e.g. failure mode: seal vs fouling vs flooding).
+
+More detail / UML: [`docs/functional-spec.md`](docs/functional-spec.md).
 
 ---
 
@@ -28,109 +42,42 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### If you use Nimble (local)
-
-1. Install and start [Ollama](https://ollama.com) **0.35 or later**.
-2. Pull the model:
-
-```bash
-ollama pull nimble
-```
-
-### If you use Jev (hosted)
-
-1. Create a key at [TypeSafe console](https://console.typesafe.ai/keys).
-2. Put it in your environment (do **not** put it in the Excel file or in git):
-
-```bash
-export TYPESAFE_API_KEY=...
-```
-
-You can use one engine or both. Same setup steps either way; only the engine you call needs to be available.
+**Nimble:** Ollama ≥ 0.35, then `ollama pull nimble`  
+**Jev:** `export TYPESAFE_API_KEY=...` ([keys](https://console.typesafe.ai/keys))
 
 ---
 
-## The workbook
+## Workbook
 
-Open [`nimble_classifier_workbook.xlsx`](nimble_classifier_workbook.xlsx) in **LibreOffice or Excel**.  
-Close the file before you run the classifier (otherwise the file may be locked).
+[`nimble_classifier_workbook.xlsx`](nimble_classifier_workbook.xlsx) — open in LibreOffice/Excel; **close it before running**.
 
-### Sheets you edit
-
-| Sheet | Purpose |
+| Sheet | Role |
 |---|---|
-| Config | Default engine, timeouts, review threshold, test size |
-| Questions | What to ask (`choice`, `noul` yes/no, or `score`) |
-| Labels | Answer options for choice and score questions |
-| Records | The text to classify (optional `expected_*` columns for checking accuracy) |
-| Lists | Dropdown values (equipment types) |
-
-### Sheets the runner writes
-
-| Sheet | Purpose |
-|---|---|
-| `output_nimble_*` | Results (one row per answer for that asset only) / Raw / Summary / Run_info |
-| `output_jev_*` | Same from a **Jev** run |
-| `output_compare` | Nimble vs Jev answers (created when **both** Results sheets exist) |
-
-Shared reliability questions (Failure mode, Containment, Urgency, Impact) apply to all equipment; Labels may list different choices per equipment class. Only asset-specific phenomena (e.g. Cross-contamination on exchangers) set Questions.equipment_type. Results are long-format: `title` + `question_id` + answer.
-
-A Nimble run does **not** delete Jev results, and a Jev run does **not** delete Nimble results.
-
-Editing tips for the sheets are on the workbook’s own **Read Me** tab.  
-Detailed behavior and UML: [`docs/functional-spec.md`](docs/functional-spec.md).
+| Config | Defaults (engine, timeouts, test size) |
+| Questions | What to ask (common vs unit-op; type choice/noul/score) |
+| Labels | Options / score levels (optional equipment filter) |
+| Records | Statements (`text`) + optional `expected_*` |
+| Lists | Equipment types for dropdowns |
+| `output_nimble_*` / `output_jev_*` | Results (one row per answer), Raw, Summary, Run_info |
+| `output_compare` | Side-by-side when both engines have Results |
 
 ---
 
-## How to run
-
-From the repo folder, with the venv activated:
+## Run
 
 ```bash
-# Check the workbook (no model calls)
 python nimble_runner.py nimble_classifier_workbook.xlsx --validate-only
-```
 
-### Run Nimble
-
-```bash
 python nimble_runner.py nimble_classifier_workbook.xlsx --engine nimble --test
 python nimble_runner.py nimble_classifier_workbook.xlsx --engine nimble
-```
 
-### Run Jev
-
-```bash
 export TYPESAFE_API_KEY=...
 python nimble_runner.py nimble_classifier_workbook.xlsx --engine jev --test
-python nimble_runner.py nimble_classifier_workbook.xlsx --engine jev
 ```
 
-### Useful flags
-
-| Flag | Meaning |
-|---|---|
-| `--engine nimble` or `--engine jev` | Which engine to use (overrides Config) |
-| `--test` | Only the first N records (`N` = Config `test_first_n`) |
-| `--validate-only` | Check the workbook, then exit |
-| `--resume <file.jsonl>` | Continue an interrupted run |
-
-Checkpoints look like `nimble_classifier_workbook_nimble_YYYYMMDD_HHMMSS.jsonl` (gitignored).
-
----
-
-## Compare Nimble and Jev
-
-1. Run Nimble on the workbook.  
-2. Run Jev on the **same** workbook.  
-3. Open the `output_compare` sheet.
-
-Rows where the two engines disagree are highlighted.
-
----
+`--test` = first N records (`Config.test_first_n`).  
+`--engine` overrides Config. Checkpoints are `*.jsonl` (gitignored).
 
 ## Security
 
-- Prefer `TYPESAFE_API_KEY` in the environment.
-- Leave Config `api_key` blank.
-- Never commit keys or a `.env` file.
+Use `TYPESAFE_API_KEY` in the environment. Leave Config `api_key` blank. Never commit keys.
