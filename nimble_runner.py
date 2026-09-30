@@ -261,6 +261,7 @@ def probe_endpoint(session, spec):
 
 
 def call_model(session, spec, body):
+    """POST /v1/systemone. Returns (answers, error, usage_dict_or_None)."""
     cfg = spec["cfg"]
     url = s(cfg["base_url"]).rstrip("/") + s(cfg["endpoint"])
     last = None
@@ -272,13 +273,33 @@ def call_model(session, spec, body):
             if r.status_code >= 400:
                 # Client errors will not fix themselves on retry.
                 raise ValueError(f"HTTP {r.status_code}: {r.text[:300]}")
-            return r.json().get("answers", {}), None
+            payload = r.json() if r.content else {}
+            usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
+            return payload.get("answers", {}), None, usage
         except ValueError as e:
-            return {}, str(e)
+            return {}, str(e), None
         except Exception as e:  # network errors, timeouts, 5xx
             last = str(e)
             time.sleep(1.5 * (attempt + 1))
-    return {}, last
+    return {}, last, None
+
+
+def usage_totals(results):
+    """Sum input/output tokens across completed records (when API returned usage)."""
+    inp = out = n = 0
+    for obj in results.values():
+        u = obj.get("usage") if isinstance(obj, dict) else None
+        if not isinstance(u, dict):
+            continue
+        it = u.get("input_tokens")
+        ot = u.get("output_tokens")
+        if isinstance(it, (int, float)):
+            inp += int(it)
+            n += 1
+        if isinstance(ot, (int, float)):
+            out += int(ot)
+    return {"input_tokens": inp, "output_tokens": out, "records_with_usage": n,
+            "total_tokens": inp + out}
 
 
 def parse_answer(q, labels, ans):
@@ -430,7 +451,7 @@ def build_outputs(spec, results, run_info, workbook_path):
         row += [bool(reasons), "; ".join(reasons), res.get("error") or ""]
         review_flags.append(bool(reasons))
         rows.append(row)
-        raw_rows.append([rec["id"], json.dumps(res["answers"])])
+        raw_rows.append([rec["id"], json.dumps(res.get("usage") or {}), json.dumps(res["answers"])])
 
     # Keep formulas / dropdowns; only refresh the output_* tabs.
     wb = load_workbook(workbook_path, data_only=False)
@@ -451,7 +472,7 @@ def build_outputs(spec, results, run_info, workbook_path):
         row[len(meta_cols)].alignment = Alignment(wrap_text=True, vertical="top")
 
     write_sheet(replace_sheet(wb, "output_Raw"),
-                ["record_id", "raw_answers_json"], raw_rows, [12, 120])
+                ["record_id", "usage_json", "raw_answers_json"], raw_rows, [12, 40, 120])
 
     mean = lambda xs: round(sum(xs) / len(xs), 3) if xs else ""
     srows = []
@@ -541,18 +562,24 @@ def main():
                 qs = questions_for(rec, spec)
                 t0 = time.time()
                 if qs:
-                    answers, error = call_model(session, spec, build_request(rec, qs, spec))
+                    answers, error, usage = call_model(session, spec, build_request(rec, qs, spec))
                 else:
-                    answers, error = {}, "no questions apply to this equipment_type"
+                    answers, error, usage = {}, "no questions apply to this equipment_type", None
                 obj = {"record_id": rec["id"], "answers": answers, "error": error,
-                       "seconds": round(time.time() - t0, 3)}
+                       "usage": usage, "seconds": round(time.time() - t0, 3)}
                 results[rec["id"]] = obj
                 f.write(json.dumps(obj) + "\n")
                 f.flush()
-                print(f"[{i}/{len(todo)}] {rec['id']} {'ERROR ' + error if error else 'ok'} ({obj['seconds']}s)")
+                u = usage or {}
+                utxt = ""
+                if isinstance(u.get("input_tokens"), (int, float)) or isinstance(u.get("output_tokens"), (int, float)):
+                    utxt = f" in={u.get('input_tokens')} out={u.get('output_tokens')}"
+                print(f"[{i}/{len(todo)}] {rec['id']} {'ERROR ' + error if error else 'ok'} "
+                      f"({obj['seconds']}s){utxt}")
     except KeyboardInterrupt:
         print(f"\nInterrupted. Resume with: python {sys.argv[0]} {workbook_path} --resume {ckpt}")
 
+    totals = usage_totals(results)
     info = {"run_started": stamp, "workbook": str(workbook_path), "model": cfg["model"],
             "base_url": base, "endpoint_info": endpoint_info, "questions_hash": qhash,
             "api_key_configured": bool(cfg.get("_api_key_set")),
@@ -560,9 +587,14 @@ def main():
             "failed_records": sum(1 for r in records if r["id"] in results and results[r["id"]].get("error")),
             "review_threshold_default": cfg["default_review_below"],
             "elapsed_seconds": round(time.time() - started, 1), "checkpoint": str(ckpt),
+            "input_tokens": totals["input_tokens"], "output_tokens": totals["output_tokens"],
+            "total_tokens": totals["total_tokens"],
+            "records_with_usage": totals["records_with_usage"],
             "output_sheets": ", ".join(OUTPUT_SHEETS)}
     build_outputs(spec, results, info, workbook_path)
     print(f"Updated {workbook_path} with sheets: {', '.join(OUTPUT_SHEETS)}")
+    print(f"Tokens: input={totals['input_tokens']} output={totals['output_tokens']} "
+          f"total={totals['total_tokens']} (from {totals['records_with_usage']} record(s))")
     print(f"Checkpoint (for --resume): {ckpt}")
 
 
