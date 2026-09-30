@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Nimble plant batch classifier (v1.0-dev).
+nimble_plant batch classifier (v1.0-dev).
 
-One control workbook; choose engine nimble (local Ollama) or jev (TypeSafe).
-Writes engine-prefixed sheets (output_nimble_* / output_jev_*) and never deletes
-the other engine's results. When both Results sheets exist, refreshes output_compare.
+One workbook; --engine nimble (Ollama) or jev (TypeSafe). Writes output_<engine>_*
+sheets without clearing the other engine; refreshes output_compare when both exist.
 
-Usage
     python nimble_runner.py workbook.xlsx --engine nimble
     python nimble_runner.py workbook.xlsx --engine jev --test
     python nimble_runner.py workbook.xlsx --validate-only
 
+See README.md and docs/functional-spec.md.
 Requires: pip install requests openpyxl
-  - nimble: Ollama >= 0.35 with `ollama pull nimble`
-  - jev:    export TYPESAFE_API_KEY=...
+  nimble: Ollama >= 0.35, ollama pull nimble
+  jev:    export TYPESAFE_API_KEY=...
 """
 import argparse
 import hashlib

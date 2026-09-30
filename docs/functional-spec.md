@@ -3,12 +3,13 @@
 | Field | Value |
 |---|---|
 | Product | `nimble_plant` batch classifier |
-| Branch / revision | `v1.0-dev` |
+| Status | As-built on branch `v1.0-dev` |
 | Scope | One control workbook; engines **nimble** (local Ollama) and **jev** (TypeSafe hosted) |
-| Primary artifacts | [`nimble_runner.py`](../nimble_runner.py), [`nimble_classifier_workbook.xlsx`](../nimble_classifier_workbook.xlsx) |
-| Stable baseline (out of scope for this spec) | tag `v0.1.0` / branch `main` (Nimble-only, unprefixed `output_*`) |
+| Artifacts | [`nimble_runner.py`](../nimble_runner.py), [`nimble_classifier_workbook.xlsx`](../nimble_classifier_workbook.xlsx) |
+| Out of scope | tag `v0.1.0` / `main` (Nimble-only, unprefixed `output_*`) |
+| UML | Mermaid: use case, component, domain, activity, sequence (×2), state |
 
-This document defines **what** the system does for the unified two-engine revision. UML is rendered as Mermaid (use-case, component, activity, sequence, state, and domain).
+Operator quick start: [../README.md](../README.md). Doc index: [README.md](README.md).
 
 ---
 
@@ -380,13 +381,14 @@ Exit codes: `0` success; `1` validation or configuration failure (unreachable en
 | A6 | Token totals recorded when API returns usage | Run_info / Raw |
 | A7 | Docs describe both engines and compare | README + this spec |
 
-QC on this revision: 6 records / 18 answer cells, **18/18 Nimble↔Jev agree**, zero request failures (see branch workbook after QC commit).
-
 ---
 
 ## 15. Related documents
 
-- [README.md](../README.md) — operator quick start  
-- Workbook **Read Me** sheet — in-file editing rules  
-- [experiments/README.md](../experiments/README.md) — archived dual-workbook experiment  
-- Tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0) — prior Nimble-only behavior  
+| Document | Role |
+|---|---|
+| [../README.md](../README.md) | Operator quick start |
+| Workbook **Read Me** sheet | In-file editing rules |
+| [../experiments/README.md](../experiments/README.md) | Archived dual-workbook experiment |
+| Tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0) | Prior Nimble-only behavior |
+
