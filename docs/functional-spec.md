@@ -4,18 +4,20 @@
 |---|---|
 | Product | `nimble_plant` batch classifier |
 | Status | As-built on branch `v1.0-dev` |
-| Scope | One control workbook; engines **nimble** (local Ollama) and **jev** (TypeSafe hosted) |
+| Scope | **Both** engines in one workbook: **Nimble** (local Ollama) and **Jev** (TypeSafe hosted) |
 | Artifacts | [`nimble_runner.py`](../nimble_runner.py), [`nimble_classifier_workbook.xlsx`](../nimble_classifier_workbook.xlsx) |
-| Out of scope | tag `v0.1.0` / `main` (Nimble-only, unprefixed `output_*`) |
+| Out of scope | tag `v0.1.0` / `main` (older Nimble-only workflow) |
 | UML | Mermaid: use case, component, domain, activity, sequence (×2), state |
 
-Operator quick start: [../README.md](../README.md). Doc index: [README.md](README.md).
+How to run day-to-day: the single project guide [../README.md](../README.md) (Nimble **and** Jev).
 
 ---
 
 ## 1. Purpose
 
-Classify plant-operations free text into structured answers (choice / yes-no / score) by calling a decision API (`/v1/systemone`). Operators edit questions and records in Excel/LibreOffice; the runner validates, calls the selected engine, and writes results back into the **same** workbook without destroying the other engine’s results so side-by-side comparison is possible.
+Classify plant-operations free text into structured answers (choice / yes-no / score) via `/v1/systemone`.
+
+This revision is **dual-engine**: the same questions and records can be classified with **Nimble** and/or **Jev**. Operators edit the workbook in Excel/LibreOffice, run the CLI with `--engine nimble` or `--engine jev`, and get separate result sheets. When both engines have Results, `output_compare` is refreshed. One engine’s run never deletes the other’s outputs.
 
 ---
 
