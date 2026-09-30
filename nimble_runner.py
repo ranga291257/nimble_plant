@@ -137,8 +137,10 @@ def load_spec(path):
     for r in read_table(wb["Questions"]):
         if not s(r.get("question_id")):
             continue
+        qid = s(r["question_id"])
         questions.append({
-            "id": s(r["question_id"]),
+            "id": qid,
+            "title": s(r.get("title")) or qid,
             "equipment": s(r.get("equipment_type")),
             "type": s(r.get("type")).lower(),
             "instructions": s(r.get("instructions")),
@@ -423,7 +425,10 @@ def replace_sheet(wb, name):
 
 
 def _results_answer_map(wb, sheet_name):
-    """Map (record_id, question_id) -> (answer, confidence) from an output_*_Results sheet."""
+    """Map (record_id, question_id) -> (answer, confidence) from an output_*_Results sheet.
+
+    Supports long format (question_id + answer columns) and legacy wide (*__answer) sheets.
+    """
     if sheet_name not in wb.sheetnames:
         return {}
     rows = read_table(wb[sheet_name])
@@ -432,11 +437,15 @@ def _results_answer_map(wb, sheet_name):
         rid = s(r.get("record_id"))
         if not rid:
             continue
+        qid = s(r.get("question_id"))
+        if qid and ("answer" in r or "confidence" in r):
+            out[(rid, qid)] = (s(r.get("answer")), to_float(r.get("confidence")))
+            continue
         for k, v in r.items():
             if k.endswith("__answer"):
-                qid = k[: -len("__answer")]
-                conf = to_float(r.get(f"{qid}__confidence"))
-                out[(rid, qid)] = (s(v), conf)
+                qid_w = k[: -len("__answer")]
+                conf = to_float(r.get(f"{qid_w}__confidence"))
+                out[(rid, qid_w)] = (s(v), conf)
     return out
 
 
@@ -479,7 +488,11 @@ def build_compare_sheet(wb, spec):
 
 
 def build_outputs(spec, results, run_info, workbook_path, engine):
-    """Write output_{engine}_* sheets only; refresh output_compare if both engines exist."""
+    """Write output_{engine}_* sheets only; refresh output_compare if both engines exist.
+
+    Results are long-format: one row per record × applicable question only
+    (pump questions never appear on exchanger/column rows).
+    """
     names = output_sheet_names(engine)
     qmap = {q["id"]: q for q in spec["questions"]}
     done = [r for r in spec["records"] if r["id"] in results]
@@ -490,36 +503,40 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
                 asked_ids.append(q["id"])
     meta_cols = list(done[0]["meta"].keys()) if done else ["record_id"]
 
-    headers = meta_cols + ["text"]
-    for qid in asked_ids:
-        headers += [f"{qid}__answer", f"{qid}__confidence", f"{qid}__value"]
-    headers += ["needs_review", "review_reasons", "error"]
+    headers = meta_cols + ["text", "question_id", "title", "answer", "confidence", "value",
+                           "needs_review", "review_reasons", "error"]
 
     stats = {qid: {"asked": 0, "answered": 0, "review": 0, "conf": [], "exp": 0,
                    "ok": 0, "conf_ok": [], "conf_bad": []} for qid in asked_ids}
     rows, raw_rows, review_flags = [], [], []
     for rec in done:
         res = results[rec["id"]]
-        row = [rec["meta"].get(c, "") for c in meta_cols] + [rec["text"]]
-        reasons = []
-        for qid in asked_ids:
-            q = qmap[qid]
-            applies = q in questions_for(rec, spec)
-            if not applies:
-                row += ["", "", ""]
-                continue
+        rec_qs = questions_for(rec, spec)
+        raw_rows.append([rec["id"], json.dumps(res.get("usage") or {}), json.dumps(res["answers"])])
+        if not rec_qs:
+            meta = [rec["meta"].get(c, "") for c in meta_cols]
+            row = meta + [rec["text"], "", "", "", None, None,
+                          True, "no questions apply to this equipment_type",
+                          res.get("error") or "no questions apply to this equipment_type"]
+            rows.append(row)
+            review_flags.append(True)
+            continue
+        for q in rec_qs:
+            qid = q["id"]
             st = stats[qid]
             st["asked"] += 1
             parsed = parse_answer(q, spec["labels"].get(qid, []), res["answers"].get(qid))
-            row += [parsed["answer"], parsed["confidence"], parsed["value"]]
             if parsed["answer"] != "":
                 st["answered"] += 1
             if parsed["confidence"] is not None:
                 st["conf"].append(parsed["confidence"])
             why = review_reason(q, parsed, spec["cfg"]["default_review_below"])
+            reasons = []
             if why:
                 reasons.append(why)
                 st["review"] += 1
+            if res.get("error"):
+                reasons.append("request failed")
             exp = rec["expected"].get(qid)
             if exp and parsed["answer"] != "":
                 st["exp"] += 1
@@ -527,12 +544,12 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
                 st["ok"] += int(correct)
                 if parsed["confidence"] is not None:
                     (st["conf_ok"] if correct else st["conf_bad"]).append(parsed["confidence"])
-        if res.get("error"):
-            reasons.append("request failed")
-        row += [bool(reasons), "; ".join(reasons), res.get("error") or ""]
-        review_flags.append(bool(reasons))
-        rows.append(row)
-        raw_rows.append([rec["id"], json.dumps(res.get("usage") or {}), json.dumps(res["answers"])])
+            meta = [rec["meta"].get(c, "") for c in meta_cols]
+            row = meta + [rec["text"], qid, q.get("title") or qid,
+                          parsed["answer"], parsed["confidence"], parsed["value"],
+                          bool(reasons), "; ".join(reasons), res.get("error") or ""]
+            rows.append(row)
+            review_flags.append(bool(reasons))
 
     wb = load_workbook(workbook_path, data_only=False)
     for name in names:
@@ -540,17 +557,18 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
             del wb[name]
 
     ws = replace_sheet(wb, names[0])
-    widths = [12] * len(meta_cols) + [60] + [16, 12, 10] * len(asked_ids) + [12, 45, 30]
+    widths = [12] * len(meta_cols) + [50, 22, 20, 14, 12, 10, 12, 40, 30]
     write_sheet(ws, headers, rows, widths)
     for i, flag in enumerate(review_flags, start=2):
         if flag:
             for c in ws[i]:
                 c.fill = REVIEW_FILL
+    text_col = len(meta_cols)  # 0-based index of text in row
     for row in ws.iter_rows(min_row=2):
         for c in row:
             if isinstance(c.value, float):
                 c.number_format = "0.000"
-        row[len(meta_cols)].alignment = Alignment(wrap_text=True, vertical="top")
+        row[text_col].alignment = Alignment(wrap_text=True, vertical="top")
 
     write_sheet(replace_sheet(wb, names[1]),
                 ["record_id", "usage_json", "raw_answers_json"], raw_rows, [12, 40, 120])
@@ -559,14 +577,16 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
     srows = []
     for qid in asked_ids:
         st = stats[qid]
-        srows.append([qid, qmap[qid]["type"], st["asked"], st["answered"], st["review"],
+        srows.append([qid, qmap[qid].get("title") or qid, qmap[qid]["type"],
+                      st["asked"], st["answered"], st["review"],
                       mean(st["conf"]), st["exp"], st["ok"],
                       round(st["ok"] / st["exp"], 3) if st["exp"] else "",
                       mean(st["conf_ok"]), mean(st["conf_bad"])])
     write_sheet(replace_sheet(wb, names[2]),
-                ["question_id", "type", "asked", "answered", "flagged_for_review", "mean_confidence",
-                 "with_expected", "correct", "accuracy", "mean_conf_when_correct", "mean_conf_when_wrong"],
-                srows, [24, 10, 8, 10, 18, 16, 14, 9, 10, 20, 20])
+                ["question_id", "title", "type", "asked", "answered", "flagged_for_review",
+                 "mean_confidence", "with_expected", "correct", "accuracy",
+                 "mean_conf_when_correct", "mean_conf_when_wrong"],
+                srows, [24, 20, 10, 8, 10, 18, 16, 14, 9, 10, 20, 20])
 
     write_sheet(replace_sheet(wb, names[3]),
                 ["item", "value"], [[k, str(v)] for k, v in run_info.items()], [26, 70])

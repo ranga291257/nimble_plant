@@ -69,9 +69,11 @@ Close the file before you run the classifier (otherwise the file may be locked).
 
 | Sheet | Purpose |
 |---|---|
-| `output_nimble_*` | Results / Raw / Summary / Run_info from a **Nimble** run |
-| `output_jev_*` | Results / Raw / Summary / Run_info from a **Jev** run |
+| `output_nimble_*` | Results (one row per answer for that asset only) / Raw / Summary / Run_info |
+| `output_jev_*` | Same from a **Jev** run |
 | `output_compare` | Nimble vs Jev answers (created when **both** Results sheets exist) |
+
+Questions are scoped by `equipment_type`: a Pump question is never asked for a Heat Exchanger or Column. Results use a short human `title` (e.g. Failure mode) plus the unique `question_id`.
 
 A Nimble run does **not** delete Jev results, and a Jev run does **not** delete Nimble results.
 

@@ -355,7 +355,7 @@ Exit codes: `0` success; `1` validation or configuration failure (unreachable en
 
 | Sheet | Key columns / content |
 |---|---|
-| `output_<engine>_Results` | Record meta + text; per question `__answer`, `__confidence`, `__value`; `needs_review`, `review_reasons`, `error` |
+| `output_<engine>_Results` | Long format: one row per record × **applicable** question only (`question_id`, `title`, `answer`, `confidence`, `value`, review flags). Pump questions never appear on exchanger/column rows. |
 | `output_<engine>_Raw` | `record_id`, `usage_json`, `raw_answers_json` |
 | `output_<engine>_Summary` | Per-question asked/answered/review/mean confidence; accuracy when expected present |
 | `output_<engine>_Run_info` | engine, model, base_url, tokens, elapsed, checkpoint path, … |
