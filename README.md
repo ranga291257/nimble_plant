@@ -4,12 +4,16 @@ Batch classifier for plant operations text using **Nimble** via local Ollama (`/
 
 Edit questions and records in the control workbook, run the classifier, and results are written back into the **same** workbook as `output_*` sheets. A JSONL file next to the workbook supports resume if a run is interrupted.
 
-**Repo:** https://github.com/ranga291257/nimble_plant (public)
+**Repo:** https://github.com/ranga291257/nimble_plant (public)  
+**Stable snapshot (shared link / original workflow):** tag [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0)
 
-| Branch | What it is |
+| Ref | What it is |
 |---|---|
-| [`main`](https://github.com/ranga291257/nimble_plant/tree/main) | Stable local Nimble / Ollama workflow (this README) |
-| [`experiment/jev-compare`](https://github.com/ranga291257/nimble_plant/tree/experiment/jev-compare) | Optional TypeSafe **Jev** hosted compare + token usage logging — see [`experiments/README.md`](https://github.com/ranga291257/nimble_plant/blob/experiment/jev-compare/experiments/README.md) |
+| [`main`](https://github.com/ranga291257/nimble_plant/tree/main) / [`v0.1.0`](https://github.com/ranga291257/nimble_plant/tree/v0.1.0) | Original shared Nimble / Ollama workflow (this README) |
+| [`v1.0-dev`](https://github.com/ranga291257/nimble_plant/tree/v1.0-dev) | **Under development** — one workbook, choose Nimble or Jev, keep both outputs for compare |
+| [`experiment/jev-compare`](https://github.com/ranga291257/nimble_plant/tree/experiment/jev-compare) | Earlier Jev experiment (superseded by v1.0-dev) |
+
+People with the shared repo link keep this Nimble flow on `main`. The frozen tag `v0.1.0` remains available even after a future v1.0 release.
 
 ## Setup
 
