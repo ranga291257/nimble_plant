@@ -59,3 +59,7 @@ After both engines have been run on the same workbook, open `output_compare` (di
 ## Security
 
 Prefer `TYPESAFE_API_KEY` in the environment; leave Config `api_key` blank. Never commit keys.
+
+## Specification
+
+Full functional specification with UML (use cases, components, activity, sequences, sheet state): [`docs/functional-spec.md`](docs/functional-spec.md).
