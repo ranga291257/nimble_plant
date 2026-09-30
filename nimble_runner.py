@@ -157,7 +157,8 @@ def load_spec(path):
         order = to_float(r.get("order"))
         labels.setdefault(qid, []).append(
             {"order": order if order is not None else 1e9 + r["_row"],
-             "label": lab, "desc": s(r.get("description")), "_row": r["_row"]})
+             "label": lab, "desc": s(r.get("description")),
+             "equipment": s(r.get("equipment_type")), "_row": r["_row"]})
     for qid in labels:
         labels[qid].sort(key=lambda x: x["order"])
 
@@ -179,6 +180,7 @@ def validate(spec):
     errs = []
     seen = set()
     qids = {q["id"] for q in spec["questions"]}
+    record_equipment = sorted({r["equipment"] for r in spec["records"] if r["equipment"]})
     for q in spec["questions"]:
         where = f"Questions row {q['_row']} ({q['id']})"
         if not ID_RE.match(q["id"]):
@@ -188,27 +190,42 @@ def validate(spec):
         seen.add(q["id"])
         if not q["instructions"]:
             errs.append(f"{where}: missing instructions")
-        n = len(spec["labels"].get(q["id"], []))
+        all_labs = spec["labels"].get(q["id"], [])
         if q["type"] not in ("choice", "noul", "score"):
             errs.append(f"{where}: type must be choice, noul or score")
-        elif q["type"] == "noul" and n:
-            errs.append(f"{where}: noul questions take no labels (found {n})")
-        elif q["type"] in ("choice", "score") and n < 2:
-            errs.append(f"{where}: needs at least 2 labels (found {n})")
+        elif q["type"] == "noul" and all_labs:
+            errs.append(f"{where}: noul questions take no labels (found {len(all_labs)})")
+        elif q["type"] in ("choice", "score"):
+            # Labels may be equipment-specific; every equipment that will be asked needs >=2.
+            if q["equipment"]:
+                equip_list = [q["equipment"]]
+            else:
+                equip_list = record_equipment or [""]
+            for eq in equip_list:
+                n = len(labels_for_question(q["id"], eq, spec))
+                if n < 2:
+                    scope = eq or "all records"
+                    errs.append(f"{where}: needs at least 2 labels for equipment '{scope}' (found {n})")
         if q["review_below"] is not None and not 0 <= q["review_below"] <= 1:
             errs.append(f"{where}: review_below must be between 0 and 1")
     for qid, items in spec["labels"].items():
         if qid not in qids:
             errs.append(f"Labels: unknown question_id '{qid}'")
-        names = set()
+        names_by_eq = {}
         for it in items:
             if not it["label"]:
                 errs.append(f"Labels row {it['_row']}: missing label")
             elif not ID_RE.match(it["label"]):
                 errs.append(f"Labels row {it['_row']}: label '{it['label']}' may only use letters, digits, _ and -")
-            elif it["label"] in names:
-                errs.append(f"Labels row {it['_row']}: duplicate label '{it['label']}' for {qid}")
-            names.add(it["label"])
+            else:
+                key = (it.get("equipment") or "").lower()
+                bucket = names_by_eq.setdefault(key, set())
+                if it["label"] in bucket:
+                    errs.append(
+                        f"Labels row {it['_row']}: duplicate label '{it['label']}' for {qid}"
+                        + (f" / equipment '{it['equipment']}'" if it.get("equipment") else "")
+                    )
+                bucket.add(it["label"])
     ids = set()
     for r in spec["records"]:
         if not r["id"]:
@@ -238,11 +255,27 @@ def questions_for(record, spec):
             if q["active"] and (not q["equipment"] or q["equipment"].lower() == rec_eq)]
 
 
+def labels_for_question(qid, equipment, spec):
+    """Labels for a question, filtered by record equipment_type.
+
+    A label with blank equipment_type applies to every asset. A label with an
+    equipment_type applies only to that asset. This lets one shared concept
+    (e.g. failure_mode) use different answer catalogs per equipment class.
+    """
+    rec_eq = s(equipment).lower()
+    out = []
+    for lab in spec["labels"].get(qid, []):
+        lab_eq = s(lab.get("equipment")).lower()
+        if not lab_eq or lab_eq == rec_eq:
+            out.append(lab)
+    return out
+
+
 def build_request(record, qs, spec):
     qdict = {}
     for q in qs:
         d = {"type": q["type"], "instructions": q["instructions"]}
-        labs = spec["labels"].get(q["id"], [])
+        labs = labels_for_question(q["id"], record["equipment"], spec)
         if q["type"] == "choice":
             d["criteria"] = {i["label"]: (i["desc"] or None) for i in labs}
         elif q["type"] == "score":
@@ -525,7 +558,8 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
             qid = q["id"]
             st = stats[qid]
             st["asked"] += 1
-            parsed = parse_answer(q, spec["labels"].get(qid, []), res["answers"].get(qid))
+            parsed = parse_answer(q, labels_for_question(qid, rec["equipment"], spec),
+                                  res["answers"].get(qid))
             if parsed["answer"] != "":
                 st["answered"] += 1
             if parsed["confidence"] is not None:

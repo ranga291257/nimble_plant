@@ -73,7 +73,7 @@ Close the file before you run the classifier (otherwise the file may be locked).
 | `output_jev_*` | Same from a **Jev** run |
 | `output_compare` | Nimble vs Jev answers (created when **both** Results sheets exist) |
 
-Questions are scoped by `equipment_type`: a Pump question is never asked for a Heat Exchanger or Column. Results use a short human `title` (e.g. Failure mode) plus the unique `question_id`.
+Shared reliability questions (Failure mode, Containment, Urgency, Impact) apply to all equipment; Labels may list different choices per equipment class. Only asset-specific phenomena (e.g. Cross-contamination on exchangers) set Questions.equipment_type. Results are long-format: `title` + `question_id` + answer.
 
 A Nimble run does **not** delete Jev results, and a Jev run does **not** delete Nimble results.
 

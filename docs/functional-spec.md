@@ -104,6 +104,7 @@ flowchart LR
 | FR-W5 | Active questions only (`active` ≠ `N`); blank equipment matches all equipment types. |
 | FR-W6 | Optional `expected_<question_id>` columns enable accuracy in Summary / compare. |
 | FR-W7 | `--test` limits to Config `test_first_n` records (if > 0). |
+| FR-W8 | Shared reliability questions may leave `equipment_type` blank; Labels may set `equipment_type` so answer choices differ by asset class. |
 
 ### 4.3 Output sheet lifecycle
 
