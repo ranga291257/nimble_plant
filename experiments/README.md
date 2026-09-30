@@ -1,6 +1,6 @@
-# Jev experiment (does not change `main`)
+# Jev experiment (branch `experiment/jev-compare`)
 
-This folder compares **TypeSafe Jev** (hosted) to the working **Nimble** (local Ollama) setup without modifying [`nimble_classifier_workbook.xlsx`](../nimble_classifier_workbook.xlsx).
+This folder compares **TypeSafe Jev** (hosted) to the working **Nimble** (local Ollama) setup. The default workbook [`../nimble_classifier_workbook.xlsx`](../nimble_classifier_workbook.xlsx) stays pointed at local Nimble.
 
 | Model | Where it runs | Config |
 |---|---|---|
@@ -25,12 +25,18 @@ export TYPESAFE_API_KEY="sk-..."   # or apikey_...
 From the repo root, on branch `experiment/jev-compare`:
 
 ```bash
-source .venv/bin/activate
-export TYPESAFE_API_KEY=...   # required for hosted Jev
+git checkout experiment/jev-compare
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+export TYPESAFE_API_KEY=...       # required for hosted Jev
 python nimble_runner.py experiments/jev_classifier_workbook.xlsx --test
 ```
 
-Results are written as `output_*` sheets in `experiments/jev_classifier_workbook.xlsx`.
+Results are written as `output_*` sheets in [`jev_classifier_workbook.xlsx`](jev_classifier_workbook.xlsx):
+
+- `output_Results` — answers / confidence / review flags
+- `output_Raw` — per-record `usage_json` (input/output tokens) and raw answers
+- `output_Summary` — accuracy stats when `expected_*` is filled
+- `output_Run_info` — includes `input_tokens`, `output_tokens`, `total_tokens`
 
 ## Compare to Nimble
 
@@ -42,5 +48,5 @@ Compare each workbook’s `output_Summary` (accuracy needs `expected_*` columns)
 
 ## Security
 
-- Prefer `TYPESAFE_API_KEY` env over Config `api_key`.
+- Prefer `TYPESAFE_API_KEY` env over Config `api_key` (leave the sheet blank).
 - If a key was pasted into chat or a ticket, rotate it in the TypeSafe console.

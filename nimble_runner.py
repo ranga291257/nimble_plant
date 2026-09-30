@@ -3,9 +3,12 @@
 Nimble batch classifier runner.
 
 Reads a control workbook (Config, Questions, Labels, Records sheets), sends each
-record to a local decision model through Ollama's /v1/systemone endpoint, clears
-any existing output_* sheets at the start of the run, then writes fresh output_*
-sheets back into the same workbook plus a resumable JSONL checkpoint.
+record to a decision model through /v1/systemone (local Ollama Nimble by default,
+or a hosted TypeSafe Jev endpoint when Config base_url / TYPESAFE_API_KEY say so),
+clears any existing output_* sheets at the start of the run, then writes fresh
+output_* sheets back into the same workbook plus a resumable JSONL checkpoint.
+When the API returns usage, input/output token totals are stored in output_Run_info
+and per-record usage in output_Raw.
 
 Usage
     python nimble_runner.py workbook.xlsx                    # full run
@@ -13,7 +16,9 @@ Usage
     python nimble_runner.py workbook.xlsx --test             # first N records (Config: test_first_n)
     python nimble_runner.py workbook.xlsx --resume run.jsonl # continue an interrupted run
 
-Requires: pip install requests openpyxl ; Ollama >= 0.35 running with the model pulled.
+Requires: pip install requests openpyxl
+  - Local Nimble: Ollama >= 0.35 with the model pulled
+  - Hosted Jev:   export TYPESAFE_API_KEY=... and use experiments/jev_classifier_workbook.xlsx
 """
 import argparse
 import hashlib

@@ -1,15 +1,23 @@
 # nimble_plant
 
-Batch classifier for plant operations text using Nimble via Ollama (`/v1/systemone`).
+Batch classifier for plant operations text using **Nimble** via local Ollama (`/v1/systemone`).
 
 Edit questions and records in the control workbook, run the classifier, and results are written back into the **same** workbook as `output_*` sheets. A JSONL file next to the workbook supports resume if a run is interrupted.
+
+**Repo:** https://github.com/ranga291257/nimble_plant (public)
+
+| Branch | What it is |
+|---|---|
+| [`main`](https://github.com/ranga291257/nimble_plant/tree/main) | Stable local Nimble / Ollama workflow (this README) |
+| [`experiment/jev-compare`](https://github.com/ranga291257/nimble_plant/tree/experiment/jev-compare) | Optional TypeSafe **Jev** hosted compare + token usage logging — see [`experiments/README.md`](https://github.com/ranga291257/nimble_plant/blob/experiment/jev-compare/experiments/README.md) |
 
 ## Setup
 
 ```bash
-cd /mnt/d/dev/nimble_plant
+git clone https://github.com/ranga291257/nimble_plant.git
+cd nimble_plant
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
