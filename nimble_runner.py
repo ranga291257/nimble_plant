@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 """
-Nimble batch classifier runner.
+Nimble plant batch classifier (v1.0-dev).
 
-Reads a control workbook (Config, Questions, Labels, Records sheets), sends each
-record to a decision model through /v1/systemone (local Ollama Nimble by default,
-or a hosted TypeSafe Jev endpoint when Config base_url / TYPESAFE_API_KEY say so),
-clears any existing output_* sheets at the start of the run, then writes fresh
-output_* sheets back into the same workbook plus a resumable JSONL checkpoint.
-When the API returns usage, input/output token totals are stored in output_Run_info
-and per-record usage in output_Raw.
+One control workbook; choose engine nimble (local Ollama) or jev (TypeSafe).
+Writes engine-prefixed sheets (output_nimble_* / output_jev_*) and never deletes
+the other engine's results. When both Results sheets exist, refreshes output_compare.
 
 Usage
-    python nimble_runner.py workbook.xlsx                    # full run
-    python nimble_runner.py workbook.xlsx --validate-only    # check the workbook, no model calls
-    python nimble_runner.py workbook.xlsx --test             # first N records (Config: test_first_n)
-    python nimble_runner.py workbook.xlsx --resume run.jsonl # continue an interrupted run
+    python nimble_runner.py workbook.xlsx --engine nimble
+    python nimble_runner.py workbook.xlsx --engine jev --test
+    python nimble_runner.py workbook.xlsx --validate-only
 
 Requires: pip install requests openpyxl
-  - Local Nimble: Ollama >= 0.35 with the model pulled
-  - Hosted Jev:   export TYPESAFE_API_KEY=... and use experiments/jev_classifier_workbook.xlsx
+  - nimble: Ollama >= 0.35 with `ollama pull nimble`
+  - jev:    export TYPESAFE_API_KEY=...
 """
 import argparse
 import hashlib
@@ -36,7 +31,20 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 REQUIRED_SHEETS = ["Config", "Questions", "Labels", "Records"]
+ENGINES = {
+    "nimble": {
+        "model": "nimble",
+        "base_url": "http://localhost:11434",
+        "endpoint": "/v1/systemone",
+    },
+    "jev": {
+        "model": "jev-1.13.0",
+        "base_url": "https://api.typesafe.ai",
+        "endpoint": "/v1/systemone",
+    },
+}
 DEFAULTS = {
+    "engine": "nimble",
     "model": "nimble",
     "base_url": "http://localhost:11434",
     "endpoint": "/v1/systemone",
@@ -48,6 +56,8 @@ DEFAULTS = {
     "output_prefix": "nimble_results",
     "api_key": "",
 }
+LEGACY_OUTPUT_SHEETS = ("output_Results", "output_Raw", "output_Summary", "output_Run_info")
+OUTPUT_SUFFIXES = ("Results", "Raw", "Summary", "Run_info")
 
 
 # ----------------------------------------------------------------- helpers
@@ -85,6 +95,27 @@ def read_table(ws):
     return out
 
 
+def output_sheet_names(engine):
+    return tuple(f"output_{engine}_{suf}" for suf in OUTPUT_SUFFIXES)
+
+
+def resolve_engine(cfg, cli_engine=None):
+    eng = s(cli_engine if cli_engine else cfg.get("engine")).lower() or "nimble"
+    if eng not in ENGINES:
+        sys.exit(f"Unknown engine '{eng}'. Use one of: {', '.join(sorted(ENGINES))}")
+    return eng
+
+
+def apply_engine_preset(cfg, engine):
+    """Apply built-in model/base_url/endpoint for the selected engine."""
+    preset = ENGINES[engine]
+    cfg["engine"] = engine
+    cfg["model"] = preset["model"]
+    cfg["base_url"] = preset["base_url"]
+    cfg["endpoint"] = preset["endpoint"]
+    return cfg
+
+
 # ----------------------------------------------------------------- workbook
 def load_spec(path):
     wb = load_workbook(path, data_only=True)
@@ -110,7 +141,7 @@ def load_spec(path):
             "equipment": s(r.get("equipment_type")),
             "type": s(r.get("type")).lower(),
             "instructions": s(r.get("instructions")),
-            "active": s(r.get("active")).upper() != "N",  # blank counts as active
+            "active": s(r.get("active")).upper() != "N",
             "review_below": to_float(r.get("review_below")),
             "_row": r["_row"],
         })
@@ -210,10 +241,8 @@ def build_request(record, qs, spec):
         d = {"type": q["type"], "instructions": q["instructions"]}
         labs = spec["labels"].get(q["id"], [])
         if q["type"] == "choice":
-            # label -> description (dict)
             d["criteria"] = {i["label"]: (i["desc"] or None) for i in labs}
         elif q["type"] == "score":
-            # ordered list of level descriptions (API requires an array)
             d["criteria"] = [i["desc"] or i["label"] for i in labs]
         qdict[q["id"]] = d
     return {"model": spec["cfg"]["model"], "state": record["text"], "questions": qdict}
@@ -221,7 +250,6 @@ def build_request(record, qs, spec):
 
 # ----------------------------------------------------------------- model calls
 def resolve_api_key(cfg):
-    """Optional Bearer token for hosted APIs (e.g. TypeSafe Jev). Prefer env."""
     return s(os.environ.get("TYPESAFE_API_KEY")) or s(cfg.get("api_key"))
 
 
@@ -231,7 +259,6 @@ def is_local_ollama(base_url):
 
 
 def configure_session(session, spec):
-    """Attach Authorization when an API key is configured (Ollama ignores it)."""
     key = resolve_api_key(spec["cfg"])
     if key:
         session.headers["Authorization"] = f"Bearer {key}"
@@ -242,7 +269,6 @@ def configure_session(session, spec):
 
 
 def probe_endpoint(session, spec):
-    """Reachability check. Ollama: /api/version. Hosted: GET /v1/models if keyed."""
     cfg = spec["cfg"]
     base = s(cfg["base_url"]).rstrip("/")
     if is_local_ollama(base):
@@ -250,7 +276,6 @@ def probe_endpoint(session, spec):
             return session.get(base + "/api/version", timeout=10).json().get("version", "unknown")
         except Exception as e:
             sys.exit(f"Cannot reach Ollama at {base}: {e}")
-    # Hosted decision API (TypeSafe Jev, etc.)
     if not resolve_api_key(cfg):
         sys.exit(
             f"base_url {base} is not local Ollama; set TYPESAFE_API_KEY "
@@ -266,7 +291,6 @@ def probe_endpoint(session, spec):
 
 
 def call_model(session, spec, body):
-    """POST /v1/systemone. Returns (answers, error, usage_dict_or_None)."""
     cfg = spec["cfg"]
     url = s(cfg["base_url"]).rstrip("/") + s(cfg["endpoint"])
     last = None
@@ -276,28 +300,25 @@ def call_model(session, spec, body):
             if r.status_code >= 500:
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
             if r.status_code >= 400:
-                # Client errors will not fix themselves on retry.
                 raise ValueError(f"HTTP {r.status_code}: {r.text[:300]}")
             payload = r.json() if r.content else {}
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
             return payload.get("answers", {}), None, usage
         except ValueError as e:
             return {}, str(e), None
-        except Exception as e:  # network errors, timeouts, 5xx
+        except Exception as e:
             last = str(e)
             time.sleep(1.5 * (attempt + 1))
     return {}, last, None
 
 
 def usage_totals(results):
-    """Sum input/output tokens across completed records (when API returned usage)."""
     inp = out = n = 0
     for obj in results.values():
         u = obj.get("usage") if isinstance(obj, dict) else None
         if not isinstance(u, dict):
             continue
-        it = u.get("input_tokens")
-        ot = u.get("output_tokens")
+        it, ot = u.get("input_tokens"), u.get("output_tokens")
         if isinstance(it, (int, float)):
             inp += int(it)
             n += 1
@@ -308,8 +329,6 @@ def usage_totals(results):
 
 
 def parse_answer(q, labels, ans):
-    """Pull a common shape out of an answer. Field names for noul and score are
-    handled defensively; the full raw answer is always kept in the Raw sheet."""
     out = {"answer": "", "confidence": None, "value": None}
     if not isinstance(ans, dict):
         return out
@@ -325,7 +344,6 @@ def parse_answer(q, labels, ans):
         p = probs.get(choice)
         out["value"] = p if num(p) else None
     elif t == "noul":
-        # Ollama Nimble returns {"type":"noul","noul": <p_true>}
         cands = [ans.get("noul"), ans.get("probability"), ans.get("p_true"),
                  probs.get("true"), probs.get("True"), probs.get("yes")]
         p = next((c for c in cands if num(c)), None)
@@ -336,7 +354,7 @@ def parse_answer(q, labels, ans):
                 out["confidence"] = max(p, 1 - p)
     elif t == "score":
         val = next((ans[k] for k in ("score", "value") if num(ans.get(k))), None)
-        if val is None and probs:  # expected level index, 0-based, from the label probabilities
+        if val is None and probs:
             val = sum(i * (probs.get(l["label"]) or 0) for i, l in enumerate(labels))
         out["value"] = val
         if val is not None and labels:
@@ -362,6 +380,7 @@ def review_reason(q, parsed, threshold):
 HDR_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=10)
 HDR_FILL = PatternFill("solid", fgColor="1F3864")
 REVIEW_FILL = PatternFill("solid", fgColor="FFF2CC")
+DIFF_FILL = PatternFill("solid", fgColor="FCE4D6")
 BODY = Font(name="Arial", size=10)
 
 
@@ -380,31 +399,87 @@ def write_sheet(ws, headers, rows, widths=None):
     ws.freeze_panes = "A2"
 
 
-OUTPUT_SHEETS = ("output_Results", "output_Raw", "output_Summary", "output_Run_info")
-
-
-def clear_output_sheets(workbook_path):
-    """Remove all output_* sheets so a run starts from a clean workbook."""
+def clear_engine_output_sheets(workbook_path, engine):
+    """Clear only this engine's output_* sheets (+ legacy unprefixed once). Never touch the other engine."""
     wb = load_workbook(workbook_path, data_only=False)
-    stale = [n for n in wb.sheetnames if n.startswith("output_")]
-    for name in stale:
+    prefix = f"output_{engine}_"
+    stale = [n for n in wb.sheetnames if n.startswith(prefix)]
+    legacy = [n for n in LEGACY_OUTPUT_SHEETS if n in wb.sheetnames]
+    removed = stale + legacy
+    for name in removed:
         del wb[name]
-    if stale:
+    if removed:
         wb.save(workbook_path)
-        print(f"Cleared previous output sheets: {', '.join(stale)}")
+        print(f"Cleared sheets for engine={engine}: {', '.join(removed)}")
     else:
-        print("No previous output_* sheets to clear.")
+        print(f"No previous output_{engine}_* sheets to clear.")
 
 
 def replace_sheet(wb, name):
-    """Create a fresh sheet named `name`, replacing any previous copy."""
     if name in wb.sheetnames:
         del wb[name]
     return wb.create_sheet(name)
 
 
-def build_outputs(spec, results, run_info, workbook_path):
-    """Write Results/Raw/Summary/Run_info as output_* sheets into the control workbook."""
+def _results_answer_map(wb, sheet_name):
+    """Map (record_id, question_id) -> (answer, confidence) from an output_*_Results sheet."""
+    if sheet_name not in wb.sheetnames:
+        return {}
+    rows = read_table(wb[sheet_name])
+    out = {}
+    for r in rows:
+        rid = s(r.get("record_id"))
+        if not rid:
+            continue
+        for k, v in r.items():
+            if k.endswith("__answer"):
+                qid = k[: -len("__answer")]
+                conf = to_float(r.get(f"{qid}__confidence"))
+                out[(rid, qid)] = (s(v), conf)
+    return out
+
+
+def build_compare_sheet(wb, spec):
+    """Refresh output_compare when both engine Results sheets exist."""
+    nim = _results_answer_map(wb, "output_nimble_Results")
+    jev = _results_answer_map(wb, "output_jev_Results")
+    if not nim or not jev:
+        return False
+    expected = {}
+    for rec in spec["records"]:
+        for qid, exp in rec["expected"].items():
+            expected[(rec["id"], qid)] = exp
+    keys = sorted(set(nim) | set(jev))
+    rows = []
+    for rid, qid in keys:
+        na, nc = nim.get((rid, qid), ("", None))
+        ja, jc = jev.get((rid, qid), ("", None))
+        if na == "" and ja == "":
+            continue
+        exp = expected.get((rid, qid), "")
+        agree = na != "" and ja != "" and na.lower() == ja.lower()
+        rows.append([
+            rid, qid, na, ja, agree, nc, jc, exp,
+            (na.lower() == exp) if exp and na else "",
+            (ja.lower() == exp) if exp and ja else "",
+        ])
+    ws = replace_sheet(wb, "output_compare")
+    write_sheet(ws,
+                ["record_id", "question_id", "nimble_answer", "jev_answer", "agree",
+                 "nimble_confidence", "jev_confidence", "expected",
+                 "nimble_correct", "jev_correct"],
+                rows, [12, 22, 14, 14, 8, 14, 14, 12, 12, 12])
+    for i, row in enumerate(rows, start=2):
+        if row[4] is False:
+            for c in ws[i]:
+                c.fill = DIFF_FILL
+    print("Updated output_compare (both engines present).")
+    return True
+
+
+def build_outputs(spec, results, run_info, workbook_path, engine):
+    """Write output_{engine}_* sheets only; refresh output_compare if both engines exist."""
+    names = output_sheet_names(engine)
     qmap = {q["id"]: q for q in spec["questions"]}
     done = [r for r in spec["records"] if r["id"] in results]
     asked_ids = []
@@ -458,12 +533,12 @@ def build_outputs(spec, results, run_info, workbook_path):
         rows.append(row)
         raw_rows.append([rec["id"], json.dumps(res.get("usage") or {}), json.dumps(res["answers"])])
 
-    # Keep formulas / dropdowns; only refresh the output_* tabs.
     wb = load_workbook(workbook_path, data_only=False)
-    for stale in [n for n in wb.sheetnames if n.startswith("output_")]:
-        del wb[stale]
+    for name in names:
+        if name in wb.sheetnames:
+            del wb[name]
 
-    ws = replace_sheet(wb, "output_Results")
+    ws = replace_sheet(wb, names[0])
     widths = [12] * len(meta_cols) + [60] + [16, 12, 10] * len(asked_ids) + [12, 45, 30]
     write_sheet(ws, headers, rows, widths)
     for i, flag in enumerate(review_flags, start=2):
@@ -476,7 +551,7 @@ def build_outputs(spec, results, run_info, workbook_path):
                 c.number_format = "0.000"
         row[len(meta_cols)].alignment = Alignment(wrap_text=True, vertical="top")
 
-    write_sheet(replace_sheet(wb, "output_Raw"),
+    write_sheet(replace_sheet(wb, names[1]),
                 ["record_id", "usage_json", "raw_answers_json"], raw_rows, [12, 40, 120])
 
     mean = lambda xs: round(sum(xs) / len(xs), 3) if xs else ""
@@ -487,20 +562,25 @@ def build_outputs(spec, results, run_info, workbook_path):
                       mean(st["conf"]), st["exp"], st["ok"],
                       round(st["ok"] / st["exp"], 3) if st["exp"] else "",
                       mean(st["conf_ok"]), mean(st["conf_bad"])])
-    write_sheet(replace_sheet(wb, "output_Summary"),
+    write_sheet(replace_sheet(wb, names[2]),
                 ["question_id", "type", "asked", "answered", "flagged_for_review", "mean_confidence",
                  "with_expected", "correct", "accuracy", "mean_conf_when_correct", "mean_conf_when_wrong"],
                 srows, [24, 10, 8, 10, 18, 16, 14, 9, 10, 20, 20])
 
-    write_sheet(replace_sheet(wb, "output_Run_info"),
+    write_sheet(replace_sheet(wb, names[3]),
                 ["item", "value"], [[k, str(v)] for k, v in run_info.items()], [26, 70])
+
+    build_compare_sheet(wb, spec)
     wb.save(workbook_path)
+    return names
 
 
 # ----------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("workbook")
+    ap.add_argument("--engine", choices=sorted(ENGINES), default=None,
+                    help="nimble (local Ollama) or jev (TypeSafe); overrides Config engine")
     ap.add_argument("--validate-only", action="store_true", help="check the workbook and exit")
     ap.add_argument("--test", action="store_true", help="only the first test_first_n records")
     ap.add_argument("--resume", metavar="JSONL", help="continue from a checkpoint file")
@@ -517,6 +597,11 @@ def main():
         for e in errs:
             print("  -", e)
         sys.exit(1)
+
+    engine = resolve_engine(spec["cfg"], args.engine)
+    apply_engine_preset(spec["cfg"], engine)
+    print(f"Engine: {engine} (model={spec['cfg']['model']}, base_url={spec['cfg']['base_url']})")
+
     qhash = questions_hash(spec)
     active = [q for q in spec["questions"] if q["active"]]
     print(f"Workbook OK: {len(active)} active question(s), {len(spec['records'])} record(s).")
@@ -535,10 +620,9 @@ def main():
     endpoint_info = probe_endpoint(session, spec)
     print(f"Endpoint OK: {base} ({endpoint_info})")
 
-    # Drop stale results before classifying so a failed/interrupted run cannot leave old tabs.
-    clear_output_sheets(workbook_path)
+    # Only clear this engine's sheets — keep the other engine's results for compare.
+    clear_engine_output_sheets(workbook_path, engine)
 
-    # Results go into the workbook (output_* sheets). JSONL is only for resume.
     ckpt_dir = Path(args.out_dir) if args.out_dir else workbook_path.parent
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -555,9 +639,10 @@ def main():
                 results[obj["record_id"]] = obj
         print(f"Resuming: {len(results)} record(s) already done.")
     else:
-        ckpt = ckpt_dir / f"{workbook_path.stem}_{stamp}.jsonl"
+        ckpt = ckpt_dir / f"{workbook_path.stem}_{engine}_{stamp}.jsonl"
         ckpt.write_text(json.dumps({"_meta": {"questions_hash": qhash, "workbook": str(workbook_path),
-                                              "started": stamp}}) + "\n", encoding="utf-8")
+                                              "engine": engine, "started": stamp}}) + "\n",
+                        encoding="utf-8")
 
     started = time.time()
     todo = [r for r in records if r["id"] not in results]
@@ -582,22 +667,25 @@ def main():
                 print(f"[{i}/{len(todo)}] {rec['id']} {'ERROR ' + error if error else 'ok'} "
                       f"({obj['seconds']}s){utxt}")
     except KeyboardInterrupt:
-        print(f"\nInterrupted. Resume with: python {sys.argv[0]} {workbook_path} --resume {ckpt}")
+        print(f"\nInterrupted. Resume with: python {sys.argv[0]} {workbook_path} "
+              f"--engine {engine} --resume {ckpt}")
 
     totals = usage_totals(results)
-    info = {"run_started": stamp, "workbook": str(workbook_path), "model": cfg["model"],
-            "base_url": base, "endpoint_info": endpoint_info, "questions_hash": qhash,
-            "api_key_configured": bool(cfg.get("_api_key_set")),
-            "records_in_run": len(records), "records_completed": sum(1 for r in records if r["id"] in results),
+    sheet_names = output_sheet_names(engine)
+    info = {"run_started": stamp, "workbook": str(workbook_path), "engine": engine,
+            "model": cfg["model"], "base_url": base, "endpoint_info": endpoint_info,
+            "questions_hash": qhash, "api_key_configured": bool(cfg.get("_api_key_set")),
+            "records_in_run": len(records),
+            "records_completed": sum(1 for r in records if r["id"] in results),
             "failed_records": sum(1 for r in records if r["id"] in results and results[r["id"]].get("error")),
             "review_threshold_default": cfg["default_review_below"],
             "elapsed_seconds": round(time.time() - started, 1), "checkpoint": str(ckpt),
             "input_tokens": totals["input_tokens"], "output_tokens": totals["output_tokens"],
             "total_tokens": totals["total_tokens"],
             "records_with_usage": totals["records_with_usage"],
-            "output_sheets": ", ".join(OUTPUT_SHEETS)}
-    build_outputs(spec, results, info, workbook_path)
-    print(f"Updated {workbook_path} with sheets: {', '.join(OUTPUT_SHEETS)}")
+            "output_sheets": ", ".join(sheet_names)}
+    written = build_outputs(spec, results, info, workbook_path, engine)
+    print(f"Updated {workbook_path} with sheets: {', '.join(written)}")
     print(f"Tokens: input={totals['input_tokens']} output={totals['output_tokens']} "
           f"total={totals['total_tokens']} (from {totals['records_with_usage']} record(s))")
     print(f"Checkpoint (for --resume): {ckpt}")
