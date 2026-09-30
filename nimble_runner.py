@@ -18,6 +18,7 @@ Requires: pip install requests openpyxl ; Ollama >= 0.35 running with the model 
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -40,6 +41,7 @@ DEFAULTS = {
     "test_first_n": 10,
     "record_text_column": "text",
     "output_prefix": "nimble_results",
+    "api_key": "",
 }
 
 
@@ -213,6 +215,51 @@ def build_request(record, qs, spec):
 
 
 # ----------------------------------------------------------------- model calls
+def resolve_api_key(cfg):
+    """Optional Bearer token for hosted APIs (e.g. TypeSafe Jev). Prefer env."""
+    return s(os.environ.get("TYPESAFE_API_KEY")) or s(cfg.get("api_key"))
+
+
+def is_local_ollama(base_url):
+    host = s(base_url).lower()
+    return "localhost" in host or "127.0.0.1" in host
+
+
+def configure_session(session, spec):
+    """Attach Authorization when an API key is configured (Ollama ignores it)."""
+    key = resolve_api_key(spec["cfg"])
+    if key:
+        session.headers["Authorization"] = f"Bearer {key}"
+        spec["cfg"]["_api_key_set"] = True
+    else:
+        spec["cfg"]["_api_key_set"] = False
+    return session
+
+
+def probe_endpoint(session, spec):
+    """Reachability check. Ollama: /api/version. Hosted: GET /v1/models if keyed."""
+    cfg = spec["cfg"]
+    base = s(cfg["base_url"]).rstrip("/")
+    if is_local_ollama(base):
+        try:
+            return session.get(base + "/api/version", timeout=10).json().get("version", "unknown")
+        except Exception as e:
+            sys.exit(f"Cannot reach Ollama at {base}: {e}")
+    # Hosted decision API (TypeSafe Jev, etc.)
+    if not resolve_api_key(cfg):
+        sys.exit(
+            f"base_url {base} is not local Ollama; set TYPESAFE_API_KEY "
+            "(or Config api_key) for Authorization."
+        )
+    try:
+        r = session.get(base + "/v1/models", timeout=15)
+        if r.status_code >= 400:
+            sys.exit(f"Cannot reach decision API at {base}/v1/models: HTTP {r.status_code}: {r.text[:200]}")
+        return f"remote:{base}"
+    except Exception as e:
+        sys.exit(f"Cannot reach decision API at {base}: {e}")
+
+
 def call_model(session, spec, body):
     cfg = spec["cfg"]
     url = s(cfg["base_url"]).rstrip("/") + s(cfg["endpoint"])
@@ -458,12 +505,9 @@ def main():
 
     cfg = spec["cfg"]
     base = s(cfg["base_url"]).rstrip("/")
-    session = requests.Session()
-    ollama_version = "unknown"
-    try:
-        ollama_version = session.get(base + "/api/version", timeout=10).json().get("version", "unknown")
-    except Exception as e:
-        sys.exit(f"Cannot reach Ollama at {base}: {e}")
+    session = configure_session(requests.Session(), spec)
+    endpoint_info = probe_endpoint(session, spec)
+    print(f"Endpoint OK: {base} ({endpoint_info})")
 
     # Drop stale results before classifying so a failed/interrupted run cannot leave old tabs.
     clear_output_sheets(workbook_path)
@@ -510,7 +554,8 @@ def main():
         print(f"\nInterrupted. Resume with: python {sys.argv[0]} {workbook_path} --resume {ckpt}")
 
     info = {"run_started": stamp, "workbook": str(workbook_path), "model": cfg["model"],
-            "ollama_version": ollama_version, "questions_hash": qhash,
+            "base_url": base, "endpoint_info": endpoint_info, "questions_hash": qhash,
+            "api_key_configured": bool(cfg.get("_api_key_set")),
             "records_in_run": len(records), "records_completed": sum(1 for r in records if r["id"] in results),
             "failed_records": sum(1 for r in records if r["id"] in results and results[r["id"]].get("error")),
             "review_threshold_default": cfg["default_review_below"],
