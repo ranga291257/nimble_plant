@@ -5,3 +5,6 @@
 __pycache__/
 .pytest_cache/
 .venv/
+.venv-jevk5/
+models/
+logs/

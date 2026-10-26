@@ -2,15 +2,17 @@
 """
 nimble_plant batch classifier (v1.0-dev).
 
-Classifies plant text with either engine in one workbook:
+Classifies plant statements with any engine in one workbook:
   --engine nimble  (local Ollama)
   --engine jev     (TypeSafe cloud; needs TYPESAFE_API_KEY)
+  --engine jevk5   (local JevK5 runtime; HF alibiserikbay/JevK5)
 
-Writes output_<engine>_* without clearing the other engine.
-Refreshes output_compare when both Results sheets exist.
+Writes output_<engine>_* without clearing other engines.
+Refreshes output_compare when two or more Results sheets exist.
 
     python nimble_runner.py workbook.xlsx --engine nimble
     python nimble_runner.py workbook.xlsx --engine jev --test
+    python nimble_runner.py workbook.xlsx --engine jevk5 --test
     python nimble_runner.py workbook.xlsx --validate-only
 
 Operator guide: README.md  |  Spec: docs/functional-spec.md
@@ -43,6 +45,11 @@ ENGINES = {
         "base_url": "https://api.typesafe.ai",
         "endpoint": "/v1/systemone",
     },
+    "jevk5": {
+        "model": "alibiserikbay/JevK5",
+        "base_url": "http://localhost:8090",
+        "endpoint": "/v1/systemone",
+    },
 }
 DEFAULTS = {
     "engine": "nimble",
@@ -53,7 +60,7 @@ DEFAULTS = {
     "retries": 2,
     "default_review_below": 0.6,
     "test_first_n": 10,
-    "record_text_column": "text",
+    "record_statement_column": "statement",
     "output_prefix": "nimble_results",
     "api_key": "",
 }
@@ -145,7 +152,6 @@ def load_spec(path):
             "type": s(r.get("type")).lower(),
             "instructions": s(r.get("instructions")),
             "active": s(r.get("active")).upper() != "N",
-            "review_below": to_float(r.get("review_below")),
             "_row": r["_row"],
         })
 
@@ -162,16 +168,14 @@ def load_spec(path):
     for qid in labels:
         labels[qid].sort(key=lambda x: x["order"])
 
-    text_col = s(cfg["record_text_column"])
+    stmt_col = s(cfg.get("record_statement_column") or cfg.get("record_text_column") or "statement")
     records = []
     for r in read_table(wb["Records"]):
-        expected = {k[len("expected_"):]: s(v).lower() for k, v in r.items()
-                    if k.startswith("expected_") and s(v) != ""}
         meta = {k: s(v) for k, v in r.items()
-                if k not in ("_row", text_col, "check") and not k.startswith("expected_")}
+                if k not in ("_row", stmt_col, "check") and not k.startswith("expected_")}
         records.append({
             "id": s(r.get("record_id")), "equipment": s(r.get("equipment_type")),
-            "text": s(r.get(text_col)), "expected": expected, "meta": meta, "_row": r["_row"],
+            "statement": s(r.get(stmt_col)), "meta": meta, "_row": r["_row"],
         })
     return {"cfg": cfg, "questions": questions, "labels": labels, "records": records}
 
@@ -206,8 +210,6 @@ def validate(spec):
                 if n < 2:
                     scope = eq or "all records"
                     errs.append(f"{where}: needs at least 2 labels for equipment '{scope}' (found {n})")
-        if q["review_below"] is not None and not 0 <= q["review_below"] <= 1:
-            errs.append(f"{where}: review_below must be between 0 and 1")
     for qid, items in spec["labels"].items():
         if qid not in qids:
             errs.append(f"Labels: unknown question_id '{qid}'")
@@ -233,8 +235,8 @@ def validate(spec):
         elif r["id"] in ids:
             errs.append(f"Records row {r['_row']}: duplicate record_id '{r['id']}'")
         ids.add(r["id"])
-        if not r["text"]:
-            errs.append(f"Records row {r['_row']} ({r['id']}): empty text")
+        if not r["statement"]:
+            errs.append(f"Records row {r['_row']} ({r['id']}): empty statement")
     if not spec["records"]:
         errs.append("Records sheet has no rows")
     if not any(q["active"] for q in spec["questions"]):
@@ -281,7 +283,7 @@ def build_request(record, qs, spec):
         elif q["type"] == "score":
             d["criteria"] = [i["desc"] or i["label"] for i in labs]
         qdict[q["id"]] = d
-    return {"model": spec["cfg"]["model"], "state": record["text"], "questions": qdict}
+    return {"model": spec["cfg"]["model"], "state": record["statement"], "questions": qdict}
 
 
 # ----------------------------------------------------------------- model calls
@@ -289,13 +291,20 @@ def resolve_api_key(cfg):
     return s(os.environ.get("TYPESAFE_API_KEY")) or s(cfg.get("api_key"))
 
 
-def is_local_ollama(base_url):
+def is_local_host(base_url):
     host = s(base_url).lower()
     return "localhost" in host or "127.0.0.1" in host
 
 
+def engine_needs_api_key(engine):
+    return engine == "jev"
+
+
 def configure_session(session, spec):
     key = resolve_api_key(spec["cfg"])
+    engine = s(spec["cfg"].get("engine")).lower()
+    if engine_needs_api_key(engine) and not key:
+        sys.exit("Engine jev needs TYPESAFE_API_KEY (or Config api_key).")
     if key:
         session.headers["Authorization"] = f"Bearer {key}"
         spec["cfg"]["_api_key_set"] = True
@@ -307,23 +316,28 @@ def configure_session(session, spec):
 def probe_endpoint(session, spec):
     cfg = spec["cfg"]
     base = s(cfg["base_url"]).rstrip("/")
-    if is_local_ollama(base):
+    engine = s(cfg.get("engine")).lower()
+    if engine == "nimble":
         try:
             return session.get(base + "/api/version", timeout=10).json().get("version", "unknown")
         except Exception as e:
             sys.exit(f"Cannot reach Ollama at {base}: {e}")
-    if not resolve_api_key(cfg):
-        sys.exit(
-            f"base_url {base} is not local Ollama; set TYPESAFE_API_KEY "
-            "(or Config api_key) for Authorization."
-        )
+    # jevk5-serve exposes /health; TypeSafe Jev exposes /v1/models
+    probe = "/health" if engine == "jevk5" else "/v1/models"
     try:
-        r = session.get(base + "/v1/models", timeout=15)
+        r = session.get(base + probe, timeout=15)
         if r.status_code >= 400:
-            sys.exit(f"Cannot reach decision API at {base}/v1/models: HTTP {r.status_code}: {r.text[:200]}")
-        return f"remote:{base}"
+            hint = ""
+            if engine == "jevk5":
+                hint = (" Start JevK5 on :8090 (see README GGUF path or jevk5-serve).")
+            sys.exit(f"Cannot reach decision API at {base}{probe}: "
+                     f"HTTP {r.status_code}: {r.text[:200]}.{hint}")
+        return ("local:" if is_local_host(base) else "remote:") + base
     except Exception as e:
-        sys.exit(f"Cannot reach decision API at {base}: {e}")
+        hint = ""
+        if engine == "jevk5":
+            hint = (" Start JevK5 on :8090 (see README GGUF path or jevk5-serve).")
+        sys.exit(f"Cannot reach decision API at {base}: {e}.{hint}")
 
 
 def call_model(session, spec, body):
@@ -402,7 +416,7 @@ def parse_answer(q, labels, ans):
 def review_reason(q, parsed, threshold):
     if parsed["answer"] == "":
         return "no answer"
-    thr = q["review_below"] if q["review_below"] is not None else threshold
+    thr = threshold
     if q["type"] == "noul":
         p = parsed["value"]
         if p is not None and max(p, 1 - p) < thr:
@@ -436,7 +450,7 @@ def write_sheet(ws, headers, rows, widths=None):
 
 
 def clear_engine_output_sheets(workbook_path, engine):
-    """Clear only this engine's output_* sheets (+ legacy unprefixed once). Never touch the other engine."""
+    """Clear only this engine's output_* sheets (+ legacy unprefixed once). Never touch other engines."""
     wb = load_workbook(workbook_path, data_only=False)
     prefix = f"output_{engine}_"
     stale = [n for n in wb.sheetnames if n.startswith(prefix)]
@@ -483,45 +497,46 @@ def _results_answer_map(wb, sheet_name):
 
 
 def build_compare_sheet(wb, spec):
-    """Refresh output_compare when both engine Results sheets exist."""
-    nim = _results_answer_map(wb, "output_nimble_Results")
-    jev = _results_answer_map(wb, "output_jev_Results")
-    if not nim or not jev:
+    """Refresh output_compare when two or more engine Results sheets exist."""
+    maps = {}
+    for eng in ENGINES:
+        m = _results_answer_map(wb, f"output_{eng}_Results")
+        if m:
+            maps[eng] = m
+    engines = [e for e in ENGINES if e in maps]
+    if len(engines) < 2:
         return False
-    expected = {}
-    for rec in spec["records"]:
-        for qid, exp in rec["expected"].items():
-            expected[(rec["id"], qid)] = exp
-    keys = sorted(set(nim) | set(jev))
+    keys = sorted(set().union(*(m.keys() for m in maps.values())))
     rows = []
+    agree_col = 2 + len(engines)  # 0-based index of all_agree in each row
     for rid, qid in keys:
-        na, nc = nim.get((rid, qid), ("", None))
-        ja, jc = jev.get((rid, qid), ("", None))
-        if na == "" and ja == "":
+        answers, confs = [], []
+        for eng in engines:
+            a, c = maps[eng].get((rid, qid), ("", None))
+            answers.append(a)
+            confs.append(c)
+        if all(a == "" for a in answers):
             continue
-        exp = expected.get((rid, qid), "")
-        agree = na != "" and ja != "" and na.lower() == ja.lower()
-        rows.append([
-            rid, qid, na, ja, agree, nc, jc, exp,
-            (na.lower() == exp) if exp and na else "",
-            (ja.lower() == exp) if exp and ja else "",
-        ])
+        present = [a.lower() for a in answers if a != ""]
+        agree = len(present) >= 2 and len(set(present)) == 1
+        rows.append([rid, qid] + answers + [agree] + confs)
+    headers = (["record_id", "question_id"]
+               + [f"{e}_answer" for e in engines]
+               + ["all_agree"]
+               + [f"{e}_confidence" for e in engines])
+    widths = [12, 22] + [14] * len(engines) + [10] + [14] * len(engines)
     ws = replace_sheet(wb, "output_compare")
-    write_sheet(ws,
-                ["record_id", "question_id", "nimble_answer", "jev_answer", "agree",
-                 "nimble_confidence", "jev_confidence", "expected",
-                 "nimble_correct", "jev_correct"],
-                rows, [12, 22, 14, 14, 8, 14, 14, 12, 12, 12])
+    write_sheet(ws, headers, rows, widths)
     for i, row in enumerate(rows, start=2):
-        if row[4] is False:
+        if row[agree_col] is False:
             for c in ws[i]:
                 c.fill = DIFF_FILL
-    print("Updated output_compare (both engines present).")
+    print(f"Updated output_compare ({', '.join(engines)}).")
     return True
 
 
 def build_outputs(spec, results, run_info, workbook_path, engine):
-    """Write output_{engine}_* sheets only; refresh output_compare if both engines exist.
+    """Write output_{engine}_* sheets only; refresh output_compare if 2+ engines exist.
 
     Results are long-format: one row per record × applicable question only
     (pump questions never appear on exchanger/column rows).
@@ -536,11 +551,10 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
                 asked_ids.append(q["id"])
     meta_cols = list(done[0]["meta"].keys()) if done else ["record_id"]
 
-    headers = meta_cols + ["text", "question_id", "title", "answer", "confidence", "value",
+    headers = meta_cols + ["statement", "question_id", "title", "answer", "confidence", "value",
                            "needs_review", "review_reasons", "error"]
 
-    stats = {qid: {"asked": 0, "answered": 0, "review": 0, "conf": [], "exp": 0,
-                   "ok": 0, "conf_ok": [], "conf_bad": []} for qid in asked_ids}
+    stats = {qid: {"asked": 0, "answered": 0, "review": 0, "conf": []} for qid in asked_ids}
     rows, raw_rows, review_flags = [], [], []
     for rec in done:
         res = results[rec["id"]]
@@ -548,7 +562,7 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
         raw_rows.append([rec["id"], json.dumps(res.get("usage") or {}), json.dumps(res["answers"])])
         if not rec_qs:
             meta = [rec["meta"].get(c, "") for c in meta_cols]
-            row = meta + [rec["text"], "", "", "", None, None,
+            row = meta + [rec["statement"], "", "", "", None, None,
                           True, "no questions apply to this equipment_type",
                           res.get("error") or "no questions apply to this equipment_type"]
             rows.append(row)
@@ -571,15 +585,8 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
                 st["review"] += 1
             if res.get("error"):
                 reasons.append("request failed")
-            exp = rec["expected"].get(qid)
-            if exp and parsed["answer"] != "":
-                st["exp"] += 1
-                correct = parsed["answer"].lower() == exp
-                st["ok"] += int(correct)
-                if parsed["confidence"] is not None:
-                    (st["conf_ok"] if correct else st["conf_bad"]).append(parsed["confidence"])
             meta = [rec["meta"].get(c, "") for c in meta_cols]
-            row = meta + [rec["text"], qid, q.get("title") or qid,
+            row = meta + [rec["statement"], qid, q.get("title") or qid,
                           parsed["answer"], parsed["confidence"], parsed["value"],
                           bool(reasons), "; ".join(reasons), res.get("error") or ""]
             rows.append(row)
@@ -597,12 +604,12 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
         if flag:
             for c in ws[i]:
                 c.fill = REVIEW_FILL
-    text_col = len(meta_cols)  # 0-based index of text in row
+    stmt_col = len(meta_cols)  # 0-based index of statement in row
     for row in ws.iter_rows(min_row=2):
         for c in row:
             if isinstance(c.value, float):
                 c.number_format = "0.000"
-        row[text_col].alignment = Alignment(wrap_text=True, vertical="top")
+        row[stmt_col].alignment = Alignment(wrap_text=True, vertical="top")
 
     write_sheet(replace_sheet(wb, names[1]),
                 ["record_id", "usage_json", "raw_answers_json"], raw_rows, [12, 40, 120])
@@ -612,15 +619,11 @@ def build_outputs(spec, results, run_info, workbook_path, engine):
     for qid in asked_ids:
         st = stats[qid]
         srows.append([qid, qmap[qid].get("title") or qid, qmap[qid]["type"],
-                      st["asked"], st["answered"], st["review"],
-                      mean(st["conf"]), st["exp"], st["ok"],
-                      round(st["ok"] / st["exp"], 3) if st["exp"] else "",
-                      mean(st["conf_ok"]), mean(st["conf_bad"])])
+                      st["asked"], st["answered"], st["review"], mean(st["conf"])])
     write_sheet(replace_sheet(wb, names[2]),
                 ["question_id", "title", "type", "asked", "answered", "flagged_for_review",
-                 "mean_confidence", "with_expected", "correct", "accuracy",
-                 "mean_conf_when_correct", "mean_conf_when_wrong"],
-                srows, [24, 20, 10, 8, 10, 18, 16, 14, 9, 10, 20, 20])
+                 "mean_confidence"],
+                srows, [24, 20, 10, 8, 10, 18, 16])
 
     write_sheet(replace_sheet(wb, names[3]),
                 ["item", "value"], [[k, str(v)] for k, v in run_info.items()], [26, 70])
